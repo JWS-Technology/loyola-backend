@@ -3,6 +3,8 @@ import Course from "../models/course.model.js";
 import Student from "../models/student.model.js";
 import { getCurrentPeriod } from "../utils/periodUtils.js";
 
+
+
 // ✅ Create a new timetable entry
 export const createTimetable = async (req, res) => {
     try {
