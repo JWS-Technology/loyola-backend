@@ -1,19 +1,32 @@
+// routes/attendance.routes.js
 import express from "express";
 import {
+    getStudentsForAttendance,
     markAttendance,
     updateAttendance,
     getAttendance,
+    correctAttendance,
+    getStudentAttendanceSummary
 } from "../controllers/attendance.controller.js";
+import { requireAuth, requireRole } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
-// POST → Mark attendance
-router.post("/", markAttendance);
+// session = get students for attendance (uses requireAuth)
+router.get("/session", requireAuth, getStudentsForAttendance);
 
-// PUT → Update attendance
-router.put("/:attendanceId", updateAttendance);
+// create attendance (requireAuth)
+router.post("/", requireAuth, markAttendance);
 
-// GET → Fetch attendance (daily, subject-wise, or student-wise)
-router.get("/", getAttendance);
+// update attendance (present -> absent) by staff
+router.patch("/:attendanceId/present-to-absent", requireAuth, updateAttendance);
+
+// HOD/AD/Admin correction (absent -> present)
+router.patch("/:attendanceId/correct", requireAuth, requireRole(["hod", "ad", "admin"]), correctAttendance);
+
+router.get("/student/summary", requireAuth, getStudentAttendanceSummary);
+
+// query attendance
+router.get("/", requireAuth, getAttendance);
 
 export default router;
