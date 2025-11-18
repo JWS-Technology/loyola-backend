@@ -1,30 +1,55 @@
+// models/attendance.model.js
 import mongoose from "mongoose";
 
+const updateLogSchema = new mongoose.Schema({
+    rollNo: { type: String, required: true },
+    studentId: { type: mongoose.Schema.Types.ObjectId, ref: "Student" },
+    from: { type: String, enum: ["present", "absent"], required: true },
+    to: { type: String, enum: ["present", "absent"], required: true },
+    reason: { type: String },
+    changedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // staff/hod id
+    changedAt: { type: Date, default: Date.now },
+});
+
+const recordSchema = new mongoose.Schema({
+    studentId: { type: mongoose.Schema.Types.ObjectId, ref: "Student", required: true },
+    rollNo: { type: String, required: true },
+    status: {
+        type: String,
+        enum: ["present", "absent", "late", "on-duty"],
+        default: "present",
+    },
+    markedAt: { type: Date, default: Date.now },
+});
+
 const attendanceSchema = new mongoose.Schema({
-    date: { type: Date, required: true }, // e.g., 2025-11-03
-    period: { type: Number, required: true }, // 1–6
+    // Use string YYYY-MM-DD for easier uniqueness checks across timezone issues
+    date: { type: String, required: true },
+    period: { type: Number, required: true },
     courseId: { type: mongoose.Schema.Types.ObjectId, ref: "Course", required: true },
     subjectId: { type: mongoose.Schema.Types.ObjectId, ref: "Subject", required: true },
-    staffId: { type: mongoose.Schema.Types.ObjectId, ref: "Staff", required: true },
+    staffId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
 
-    // Store attendance for each student for that period
-    records: [
-        {
-            studentId: { type: mongoose.Schema.Types.ObjectId, ref: "Student", required: true },
-            status: {
-                type: String,
-                enum: ["present", "absent", "late", "on-duty"],
-                default: "present",
-            },
-            markedAt: { type: Date, default: Date.now },
-        },
-    ],
+    // per-student records
+    records: [recordSchema],
 
-    markedTime: { type: Date, default: Date.now }, // when attendance was marked
+    // logs of updates (present->absent, absent->present via HOD)
+    updates: [updateLogSchema],
+
+    // whether attendance is locked for the period (auto-lock or manual)
+    locked: { type: Boolean, default: false },
+    lockedAt: { type: Date },
+
+    createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
 });
 
-attendanceSchema.index({ date: 1, period: 1, subjectId: 1 }, { unique: true });
-// Prevent duplicate attendance entries for same subject & period
+// Unique index to prevent duplicates for same course/subject/period/date
+attendanceSchema.index({ date: 1, period: 1, courseId: 1, subjectId: 1 }, { unique: true });
+
+attendanceSchema.pre("save", function (next) {
+    this.updatedAt = Date.now();
+    next();
+});
 
 export default mongoose.model("Attendance", attendanceSchema);
