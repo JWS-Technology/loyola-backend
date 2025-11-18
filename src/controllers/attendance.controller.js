@@ -14,6 +14,34 @@ const normalizeDay = (d) => {
     return lower.charAt(0).toUpperCase() + lower.slice(1);
 };
 
+const getDayFromDate = (dateInput) => {
+    let dayName = "";
+
+    // If input is a date string (YYYY-MM-DD), get the weekday name
+    if (dateInput && dateInput.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        const dateObj = new Date(dateInput);
+        dayName = dateObj.toLocaleDateString("en-US", { weekday: "long" });
+    } else if (dateInput) {
+        // If input is already a day name (e.g. "Monday")
+        dayName = dateInput;
+    } else {
+        // Default to today
+        dayName = new Date().toLocaleDateString("en-US", { weekday: "long" });
+    }
+
+    const map = {
+        "monday": "Day 1",
+        "tuesday": "Day 2",
+        "wednesday": "Day 3",
+        "thursday": "Day 4",
+        "friday": "Day 5",
+        "saturday": "Day 6",
+        "sunday": "Day 7"
+    };
+
+    return map[dayName.toLowerCase()] || dayName;
+};
+
 // ---------------------- GET STUDENTS FOR ATTENDANCE ----------------------
 export const getStudentsForAttendance = async (req, res) => {
     try {
@@ -31,14 +59,12 @@ export const getStudentsForAttendance = async (req, res) => {
         const staffId = req.user?.userId ?? qStaffId;
 
         // convert period to number if present
-        const period =
-            qPeriod != null && String(qPeriod).trim() !== "" ? Number(qPeriod) : undefined;
+        const period = qPeriod != null && String(qPeriod).trim() !== "" ? Number(qPeriod) : undefined;
 
         // We need either explicit courseId+semester OR staffId+period
         if (!qCourseId && (!staffId || period == null || Number.isNaN(period))) {
             return res.status(400).json({
-                message:
-                    "Provide courseId+semester OR staffId+period (or authenticate). Ensure 'period' is a number.",
+                message: "Provide courseId+semester OR staffId+period (or authenticate). Ensure 'period' is a number.",
             });
         }
 
@@ -48,10 +74,11 @@ export const getStudentsForAttendance = async (req, res) => {
         let courseId = qCourseId;
         let semester = qSemester ? Number(qSemester) : undefined;
         let subjectId = qSubjectId;
+
         if (!courseId) {
-            const day =
-                normalizeDay(qDay) ||
-                normalizeDay(new Date().toLocaleString("en-US", { weekday: "long" }));
+            // ✅ FIX: Use the date from query to determine "Day X"
+            const day = getDayFromDate(qDay || date);
+
             console.log("Looking up timetable for", { day, period, staffId });
 
             const tt = await Timetable.findOne({ day, period, staffId });
@@ -65,7 +92,8 @@ export const getStudentsForAttendance = async (req, res) => {
 
             courseId = tt.courseId;
             semester = tt.semester;
-            subjectId = tt.subjectId;
+            // Check both field names to be safe
+            subjectId = tt.subjectId || tt.subject;
         }
 
         if (!courseId || semester == null) {
@@ -75,7 +103,7 @@ export const getStudentsForAttendance = async (req, res) => {
         }
 
         // ---------------------
-        // Resolve courseName once so it's available everywhere & in response
+        // Resolve courseName once
         // ---------------------
         let courseName = null;
         try {
@@ -100,84 +128,64 @@ export const getStudentsForAttendance = async (req, res) => {
         }
 
         // ---------------------
-        // Robust student lookup (ordered fallbacks)
+        // Robust student lookup
         // ---------------------
         let students = [];
-        const tried = [];
 
-        try {
-            // Strategy A: students with courseId field (some schemas store ObjectId)
-            tried.push({ by: "courseId", value: String(courseId) });
-            students = await Student.find({ courseId })
-                .select("_id name first_name roll_no semester course")
-                .sort({ roll_no: 1 })
-                .lean();
+        // 1. Get all students in the course
+        const allStudents = await Student.find({ courseId })
+            .select("_id name first_name roll_no batch course")
+            .sort({ roll_no: 1 });
 
-            // Strategy B: if none, try match by course name (student.course is string)
-            if ((!students || students.length === 0) && courseName) {
-                tried.push({ by: "courseName", value: courseName });
-                students = await Student.find({ course: courseName })
-                    .select("_id name first_name roll_no semester course")
-                    .sort({ roll_no: 1 })
-                    .lean();
-            }
-
-            // Strategy C: semester + course name (if course name known)
-            if (
-                (!students || students.length === 0) &&
-                typeof semester !== "undefined" &&
-                courseName
-            ) {
-                tried.push({
-                    by: "semester_plus_course",
-                    value: { semester, courseName },
-                });
-                students = await Student.find({ semester: Number(semester), course: courseName })
-                    .select("_id name first_name roll_no semester course")
-                    .sort({ roll_no: 1 })
-                    .lean();
-            }
-
-            // Strategy D: fallback by semester only
-            if ((!students || students.length === 0) && typeof semester !== "undefined") {
-                tried.push({ by: "semester_only", value: semester });
-                students = await Student.find({ semester: Number(semester) })
-                    .select("_id name first_name roll_no semester course")
-                    .sort({ roll_no: 1 })
-                    .lean();
-            }
-        } catch (e) {
-            console.error("student lookup error fallbacks:", e);
+        // 2. Filter in memory using the Virtual 'semester' field
+        // (Since 'semester' is virtual, we can't easily query it directly in MongoDB)
+        if (semester) {
+            students = allStudents.filter(s => s.semester === Number(semester));
+        } else {
+            students = allStudents;
         }
 
-        console.log(
-            "student lookup result count:",
-            Array.isArray(students) ? students.length : 0,
-            "tried:",
-            tried
-        );
+        // 3. Fallback: If filtering returned 0 (or semester wasn't provided), try finding by raw batch
+        if (students.length === 0 && semester) {
+            // Approximate batch calculation: 
+            // Sem 5/6 = Batch 2023, Sem 3/4 = Batch 2024, Sem 1/2 = Batch 2025
+            // (Assuming current academic year is 2025-2026)
+            const currentYear = new Date().getFullYear();
+            const targetBatch = currentYear - Math.ceil(semester / 2) + 1; // Adjust logic as needed
 
-        console.log("Subject ID:", subjectId)
+            // Optional: strictly query by batch if virtual field isn't working
+            // students = await Student.find({ courseId, batch: targetBatch })...
+
+            // For now, just revert to all students if filter fails, so you see something
+            if (students.length === 0) students = allStudents;
+        }
+
+
+        const targetBatch = 2026 - Math.ceil(Number(semester) / 2);
+
+        students = await Student.find({
+            courseId,
+            batch: targetBatch
+        })
+            .select("_id name first_name roll_no semester course")
+            .sort({ roll_no: 1 })
+            .lean();
+        console.log("student lookup result count:", students.length);
+        console.log("Subject ID:", subjectId);
 
         if (!students || students.length === 0) {
-            // return 200 with debug so UI can show friendly message
             return res.status(200).json({
                 courseId,
+                subjectId,
                 courseName,
                 semester,
                 count: 0,
                 students: [],
-                debug: {
-                    message: "No students found. Check student documents and field names.",
-                    tried,
-                },
+                message: "No students found."
             });
-
-
-
         }
 
-        // Prepare students with minimal normalized fields (ensure rollNo exists)
+        // Prepare students with minimal normalized fields
         const normalized = students.map((s) => ({
             _id: s._id,
             name: s.name || s.first_name || "",
@@ -186,10 +194,10 @@ export const getStudentsForAttendance = async (req, res) => {
             course: s.course || courseName || "",
         }));
 
-        // Return students (include courseName)
+        // Return students (include subjectId!)
         return res.status(200).json({
             courseId,
-            subjectId,
+            subjectId, // ✅ Sending subjectId to frontend
             courseName,
             semester,
             count: normalized.length,
@@ -200,7 +208,6 @@ export const getStudentsForAttendance = async (req, res) => {
         return res.status(500).json({ message: "Server error", error: err.message ?? err });
     }
 };
-
 // ---------------------- MARK ATTENDANCE ----------------------
 export const markAttendance = async (req, res) => {
     try {
