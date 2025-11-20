@@ -9,7 +9,7 @@ const authSchema = new mongoose.Schema({
     password: { type: String, required: true },
 
     // which type of user this auth belongs to
-    userType: { type: String, enum: ["student", "staff"], required: true },
+    userType: { type: String, enum: ["student", "staff", "admin"], required: true },
 
     // reference to Student or Staff
     userRef: {
@@ -19,7 +19,7 @@ const authSchema = new mongoose.Schema({
     },
 
     // helper field to tell mongoose ref model name for refPath
-    userTypeRefModel: { type: String, required: true, enum: ["Student", "Staff"] },
+    userTypeRefModel: { type: String, required: true, enum: ["Student", "Staff", "Admin"] },
 
     // optional: college reference or plain string if you have a College model
     collegeId: { type: mongoose.Schema.Types.ObjectId, ref: "College", required: false },
