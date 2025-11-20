@@ -38,10 +38,12 @@ export const createCourse = async (req, res) => {
 // ✅ Get all courses
 export const getAllCourses = async (req, res) => {
     try {
-        const courses = await Course.find();
-        res.status(200).json(courses);
+        // Fetch just name and code to keep it light
+        const courses = await Course.find({}, "name code type").sort({ name: 1 });
+        res.json(courses);
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        console.error("Error fetching courses:", error);
+        res.status(500).json({ message: "Server error fetching courses" });
     }
 };
 
