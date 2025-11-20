@@ -60,16 +60,28 @@ export const getAllTimetables = async (req, res) => {
 export const getTimetableByStaff = async (req, res) => {
     try {
         const { staffId } = req.params;
-        const timetables = await Timetable.find({ staffId })
+
+        if (!staffId) {
+            return res.status(400).json({ message: "Staff ID is required" });
+        }
+
+        const timetable = await Timetable.find({ staffId })
             .populate("courseId", "name code")
-            .populate("subjectId", "name code");
-        res.status(200).json(timetables);
+            .populate("subjectId", "name code")
+            .sort({ day: 1, period: 1 });
+
+        res.status(200).json({
+            success: true,
+            timetable,
+        });
     } catch (error) {
-        console.error("❌ Error fetching staff timetable:", error);
-        res.status(500).json({ message: "Server error", error: error.message });
+        console.error("getTimetableByStaff Error:", error);
+        res.status(500).json({
+            message: "Error fetching timetable for staff",
+            error: error.message,
+        });
     }
 };
-
 // ✅ Get current class for a staff based on time
 export const getCurrentClass = async (req, res) => {
     try {
