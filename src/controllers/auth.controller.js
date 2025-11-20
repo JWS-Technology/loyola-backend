@@ -1,9 +1,9 @@
-// src/controllers/auth.controller.js
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import Auth from "../models/auth.model.js";
 import Student from "../models/student.model.js";
 import Staff from "../models/staff.model.js";
+import Admin from "../models/admin.model.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "change_this_secret";
 const COOKIE_NAME = process.env.COOKIE_NAME || "erp_token";
@@ -15,7 +15,7 @@ function createToken(payload) {
 }
 
 // Register endpoint (admin or migration can call)
-// body: { username, password, userType: 'student'|'staff', userRefId, collegeId? }
+// body: { username, password, userType: 'student'|'staff'|'admin', userRefId, collegeId? }
 export const register = async (req, res) => {
     try {
         const { username, password, userType, userRefId, collegeId } = req.body;
@@ -29,8 +29,12 @@ export const register = async (req, res) => {
 
         const hashed = await bcrypt.hash(password, 12);
 
-        // ref model name
-        const refModel = userType === "student" ? "Student" : "Staff";
+        // --- FIX: Handle Admin Ref Model ---
+        let refModel;
+        if (userType === 'student') refModel = 'Student';
+        else if (userType === 'staff') refModel = 'Staff';
+        else if (userType === 'admin') refModel = 'Admin';
+        else return res.status(400).json({ message: "Invalid user type" });
 
         const auth = await Auth.create({
             username,
@@ -96,7 +100,9 @@ export const login = async (req, res) => {
             user: {
                 _id: user._id,
                 name: user.name,
-                ...(role === "student" ? { roll_no: user.roll_no, batch: user.batch } : { email: user.email }),
+                // Handle different user types for response data
+                ...(role === "student" ? { roll_no: user.roll_no, batch: user.batch } : {}),
+                ...(role === "staff" || role === "admin" ? { email: user.email } : {}),
             },
         });
     } catch (error) {
@@ -119,21 +125,34 @@ export const logout = async (req, res) => {
 // Optional: endpoint to get current user from cookie
 export const me = async (req, res) => {
     try {
-        console.log("auth me came")
         // token parsed by middleware attach to req.user
         if (!req.user) return res.status(401).json({ message: "Not authenticated" });
 
         const { userId, userType } = req.user;
 
-        const UserModel = userType === "student" ? Student : Staff;
+        // --- FIX: Select Correct Model based on userType ---
+        let UserModel;
+        if (userType === "student") {
+            UserModel = Student;
+        } else if (userType === "staff") {
+            UserModel = Staff;
+        } else if (userType === "admin") {
+            UserModel = Admin;
+        } else {
+            return res.status(400).json({ message: "Unknown user type in token" });
+        }
+
         const user = await UserModel.findById(userId).select("-__v");
-        console.log(user);
-        if (!user) return res.status(404).json({ message: "User not found" });
+
+        if (!user) {
+            console.log(`User not found in ${userType} collection with ID: ${userId}`);
+            return res.status(404).json({ message: "User not found" });
+        }
 
         return res.status(200).json({ user, role: userType });
 
     } catch (error) {
-        console.error(error);
+        console.error("Auth Me Error:", error);
         return res.status(500).json({ message: "Failed", error: error.message });
     }
 };
