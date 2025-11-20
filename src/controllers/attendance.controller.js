@@ -3,8 +3,17 @@ import Timetable from "../models/timetable.model.js";
 import Student from "../models/student.model.js";
 import Attendance from "../models/attendance.model.js";
 import Course from "../models/course.model.js";
-import Subject from "../models/subject.model.js";
+import User from "../models/auth.model.js"; // Import this to ensure Auth model is registered
+import mongoose from "mongoose";
+const getDayFromDate = (input) => {
+    if (!input) return { name: new Date().toLocaleDateString("en-US", { weekday: "long" }), mapped: null };
+    let dayName = /^\d{4}-\d{2}-\d{2}$/.test(input)
+        ? new Date(input).toLocaleDateString("en-US", { weekday: "long" })
+        : input;
 
+    const map = { monday: "Day 1", tuesday: "Day 2", wednesday: "Day 3", thursday: "Day 4", friday: "Day 5", saturday: "Day 6", sunday: "Day 7" };
+    return { name: dayName, mapped: map[dayName.toLowerCase()] };
+};
 /** helper to normalise day names */
 const normalizeDay = (d) => {
     if (!d) return d;
@@ -14,33 +23,6 @@ const normalizeDay = (d) => {
     return lower.charAt(0).toUpperCase() + lower.slice(1);
 };
 
-const getDayFromDate = (dateInput) => {
-    let dayName = "";
-
-    // If input is a date string (YYYY-MM-DD), get the weekday name
-    if (dateInput && dateInput.match(/^\d{4}-\d{2}-\d{2}$/)) {
-        const dateObj = new Date(dateInput);
-        dayName = dateObj.toLocaleDateString("en-US", { weekday: "long" });
-    } else if (dateInput) {
-        // If input is already a day name (e.g. "Monday")
-        dayName = dateInput;
-    } else {
-        // Default to today
-        dayName = new Date().toLocaleDateString("en-US", { weekday: "long" });
-    }
-
-    const map = {
-        "monday": "Day 1",
-        "tuesday": "Day 2",
-        "wednesday": "Day 3",
-        "thursday": "Day 4",
-        "friday": "Day 5",
-        "saturday": "Day 6",
-        "sunday": "Day 7"
-    };
-
-    return map[dayName.toLowerCase()] || dayName;
-};
 
 // ---------------------- GET STUDENTS FOR ATTENDANCE ----------------------
 export const getStudentsForAttendance = async (req, res) => {
@@ -76,26 +58,37 @@ export const getStudentsForAttendance = async (req, res) => {
         let subjectId = qSubjectId;
 
         if (!courseId) {
-            // ✅ FIX: Use the date from query to determine "Day X"
-            const day = getDayFromDate(qDay || date);
+            // ❌ OLD ERROR CODE: 
+            // const day = getDayFromDate(qDay || date); 
+            // const tt = await Timetable.findOne({ day, period, staffId });
 
-            console.log("Looking up timetable for", { day, period, staffId });
+            // ✅ FIXED CODE:
+            // 1. Get the day object info
+            const dayInfo = getDayFromDate(qDay || date);
 
-            const tt = await Timetable.findOne({ day, period, staffId });
+            // 2. Extract the correct String. 
+            // If your Timetable uses "Day 1", "Day 2", use .mapped
+            // If it uses "Monday", "Tuesday", use .name
+            // We try .mapped first (e.g., "Day 4"), fallback to .name (e.g., "Thursday")
+            const dayString = dayInfo.mapped || dayInfo.name;
+
+            console.log("Looking up timetable for", { day: dayString, period, staffId });
+
+            // 3. Pass the STRING to mongoose
+            const tt = await Timetable.findOne({ day: dayString, period, staffId });
+
             if (!tt) {
-                console.warn("Timetable not found for", { day, period, staffId });
+                console.warn("Timetable not found for", { day: dayString, period, staffId });
                 return res.status(404).json({
                     message: "No timetable entry found for this staff/slot",
-                    queried: { day, period, staffId },
+                    queried: { day: dayString, period, staffId },
                 });
             }
 
             courseId = tt.courseId;
             semester = tt.semester;
-            // Check both field names to be safe
             subjectId = tt.subjectId || tt.subject;
         }
-
         if (!courseId || semester == null) {
             return res.status(400).json({
                 message: "Unable to determine courseId/semester for this session.",
@@ -208,34 +201,33 @@ export const getStudentsForAttendance = async (req, res) => {
         return res.status(500).json({ message: "Server error", error: err.message ?? err });
     }
 };
+
 // ---------------------- MARK ATTENDANCE ----------------------
 export const markAttendance = async (req, res) => {
     try {
-        // prefer authenticated user
-        const actorId = req.user?.userId;
+        // ✅ CRITICAL FIX: Strictly get ID from the logged-in token
+        const staffId = req.user?.userId;
+
+        // If middleware failed or token is missing
+        if (!staffId) {
+            return res.status(401).json({ message: "Unauthorized: You must be logged in to mark attendance." });
+        }
+
         const {
             date,
             period,
             courseId,
             subjectId,
-            staffId: bodyStaffId,
             records,
         } = req.body;
 
-        // basic validation
         if (!date || period == null || !courseId || !subjectId) {
             return res.status(400).json({
                 message: "Required fields: date, period, courseId, subjectId",
             });
         }
 
-        // staff who is marking
-        const staffId = actorId ?? bodyStaffId;
-        if (!staffId) {
-            return res.status(401).json({ message: "staffId required (or authenticate)" });
-        }
-
-        // Prevent duplicate attendance for same date/period/course/subject
+        // Check for duplicates
         const existing = await Attendance.findOne({
             date,
             period,
@@ -243,12 +235,10 @@ export const markAttendance = async (req, res) => {
             subjectId,
         });
         if (existing) {
-            return res
-                .status(400)
-                .json({ message: "Attendance already marked for this period" });
+            return res.status(400).json({ message: "Attendance already marked for this period" });
         }
 
-        // Normalize records: ensure each record has studentId, rollNo, and default status present
+        // Normalize records
         const normalizedRecords = (records || []).map((r) => {
             return {
                 studentId: r.studentId,
@@ -258,28 +248,26 @@ export const markAttendance = async (req, res) => {
             };
         });
 
-        // If no records provided, refuse — UI should supply student list
         if (!normalizedRecords || normalizedRecords.length === 0) {
             return res.status(400).json({ message: "No student records provided" });
         }
 
+        // ✅ Create Attendance with correct staffId
         const attendance = new Attendance({
             date,
             period,
             courseId,
             subjectId,
-            staffId,
+            staffId, // <--- This now guarantees the ID is saved
             records: normalizedRecords,
             createdAt: new Date(),
         });
 
         await attendance.save();
-        return res
-            .status(201)
-            .json({ message: "Attendance marked successfully", attendance });
+
+        return res.status(201).json({ message: "Attendance marked successfully", attendance });
     } catch (error) {
         console.error("❌ Error marking attendance:", error);
-        // handle unique index duplicate error specifically
         if (error?.code === 11000) {
             return res.status(400).json({ message: "Duplicate attendance entry." });
         }
@@ -408,17 +396,62 @@ export const correctAttendance = async (req, res) => {
 // ---------------------- GET ATTENDANCE ----------------------
 export const getAttendance = async (req, res) => {
     try {
-        const { date, subjectId, studentId } = req.query;
+        console.log("req came", req.user)
+        // 1. Added courseId and staffId to destructured query
+        const { date, subjectId, studentId, courseId, staffId } = req.query;
         const query = {};
 
+        // SECURITY CHECK:
+        // If the user is a student, they can ONLY see their own attendance.
+        if (req.user && req.user.userType === 'student') {
+            query["records.studentId"] = new mongoose.Types.ObjectId(req.user.userId);
+
+        }
+        // IF ADMIN OR STAFF (Not Student):
+        else {
+            // If they want to see a specific student's history
+            if (studentId) {
+                query["records.studentId"] = new mongoose.Types.ObjectId(studentId);
+            }
+
+            // If Admin wants to see who posted the attendance (Filter by Staff)
+            if (staffId) query.staffId = new mongoose.Types.ObjectId(staffId);
+        }
+
+        // COMMON FILTERS (Apply to everyone)
         if (date) query.date = date;
         if (subjectId) query.subjectId = subjectId;
-        if (studentId) query["records.studentId"] = studentId;
+
+        // Added Course Filter (Crucial for Admin to filter by Class)
+        if (courseId) query.courseId = courseId;
 
         const data = await Attendance.find(query)
-            .populate("subjectId courseId staffId records.studentId", "name rollNo first_name");
+            // 2. Improved Populate: Split them up to get specific fields for Staff vs Students
+            .populate("staffId", "name email") // See WHO posted it (name and email)
+            .populate("subjectId", "name code")
+            .populate("courseId", "name")
+            .populate("records.studentId", "name rollNo first_name")
+            .sort({ date: -1, period: 1 }); // Sort by latest date
 
+        // 3. Student Sanitization (unchanged)
+        // If it's a student, clean up response to hide other students' data
+        if (req.user && req.user.userType === 'student') {
+            const sanitizedData = data.map(doc => {
+                // Safe check: ensure records exists and studentId is populated
+                const myRecord = doc.records.find(r =>
+                    r.studentId && r.studentId._id.toString() === req.user.userId.toString()
+                );
+                return {
+                    ...doc.toObject(),
+                    records: myRecord ? [myRecord] : []
+                };
+            });
+            return res.json(sanitizedData);
+        }
+
+        // IF ADMIN: Send every data (Full records, Staff info, Course info)
         res.json(data);
+        // console.log(JSON.stringify(data))
     } catch (error) {
         console.error("❌ Error fetching attendance:", error);
         res.status(500).json({ message: "Server error", error });
@@ -427,71 +460,109 @@ export const getAttendance = async (req, res) => {
 
 
 // ---------------------- GET STUDENT ATTENDANCE SUMMARY ----------------------
+// =====================================================================================
+// 2. STUDENT SUMMARY
+// =====================================================================================
 export const getStudentAttendanceSummary = async (req, res) => {
     try {
-        // 1. Get the logged-in student's ID
-        const studentId = req.user.userId; // Assuming middleware sets req.user
+        // Logic: If logged in user is student, use their ID. 
+        // If admin/staff, allow them to pass ?studentId=XYZ
+        let targetStudentId = req.query.studentId;
 
-        if (!studentId) {
-            return res.status(400).json({ message: "Student ID not found in token" });
+        if (req.user && req.user.userType === 'student') {
+            targetStudentId = req.user.userId;
         }
 
-        // 2. Find all attendance documents where this student exists in the records
-        // We select specific fields to optimize the query
-        const attendanceDocs = await Attendance.find({
-            "records.studentId": studentId
-        })
-            .populate("subjectId", "name code") // Get Subject Name & Code
-            .lean(); // Convert to plain JS objects for speed
-
-        if (!attendanceDocs || attendanceDocs.length === 0) {
-            return res.status(200).json({ attendance: [] });
+        if (!targetStudentId) {
+            return res.status(400).json({ message: "Student ID required" });
         }
 
-        // 3. Calculate statistics per subject
-        const subjectStats = {};
+        const docs = await Attendance.find({
+            "records.studentId": targetStudentId,
+        }).populate("subjectId", "name code");
 
-        attendanceDocs.forEach((doc) => {
-            const subjectId = doc.subjectId?._id?.toString();
-            if (!subjectId) return;
+        const stats = {};
 
-            // Initialize subject stats if not exists
-            if (!subjectStats[subjectId]) {
-                subjectStats[subjectId] = {
-                    subjectId: subjectId,
-                    subjectName: doc.subjectId?.name || "Unknown Subject",
-                    subjectCode: doc.subjectId?.code || "",
+        docs.forEach((a) => {
+            const sid = a.subjectId?._id?.toString();
+            if (!sid) return;
+
+            if (!stats[sid]) {
+                stats[sid] = {
+                    subjectId: sid,
+                    subjectName: a.subjectId?.name || "Unknown",
+                    subjectCode: a.subjectId?.code || "",
                     totalClasses: 0,
                     attendedClasses: 0,
                 };
             }
 
-            // Find the specific record for this student in the document
-            const studentRecord = doc.records.find(
-                (r) => r.studentId.toString() === studentId
-            );
+            const rec = a.records.find((r) => r.studentId.toString() === targetStudentId.toString());
+            if (!rec) return;
 
-            if (studentRecord) {
-                subjectStats[subjectId].totalClasses += 1;
-                // Count as present if status is present, late, or on-duty
-                if (["present", "late", "on-duty"].includes(studentRecord.status)) {
-                    subjectStats[subjectId].attendedClasses += 1;
-                }
+            stats[sid].totalClasses++;
+            if (["present", "late", "on-duty"].includes(rec.status)) {
+                stats[sid].attendedClasses++;
             }
         });
 
-        // 4. Format the result for the frontend
-        const summary = Object.values(subjectStats).map((stat) => ({
-            ...stat,
-            percentage: stat.totalClasses > 0
-                ? (stat.attendedClasses / stat.totalClasses) * 100
-                : 0
-        }));
+        const result = Object.values(stats);
+        res.json({ attendance: result });
+    } catch (err) {
+        console.error("Error(getStudentAttendanceSummary):", err);
+        res.status(500).json({ message: "Server error", error: err.message });
+    }
+};
 
-        res.status(200).json({ attendance: summary });
+/**
+ * GET /attendance/:id
+ * Get a single attendance record by ID
+ */
+export const getAttendanceById = async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // 1. Fetch and Populate
+        const attendance = await Attendance.findById(id)
+            .populate("staffId", "name email")
+            .populate("subjectId", "name code")
+            .populate("courseId", "name")
+            // Populate the student details inside the records array
+            .populate({
+                path: "records.studentId",
+                select: "name roll_no" // Fetch name from Student model
+            })
+            .lean(); // Converts to plain object so we can modify it easily
+
+        if (!attendance) {
+            return res.status(404).json({ message: "Attendance record not found" });
+        }
+
+        // 2. Transform the records to flatten the structure
+        // This pulls 'name' out of the nested object and puts it at the top level
+        attendance.records = attendance.records.map((record) => {
+            // Check if studentId exists (in case a student was deleted)
+            const studentDetails = record.studentId || {};
+
+            return {
+                _id: record._id,
+                status: record.status,
+                markedAt: record.markedAt,
+                rollNo: record.rollNo, // The rollNo stored in the attendance record
+
+                // ✅ EXTRACTING NAME HERE
+                studentName: studentDetails.name || "Unknown",
+
+                // Optional: Keep the ID or the full object if you still need it
+                studentId: studentDetails._id || null
+            };
+        });
+
+        console.log(attendance.records); // You will now see the names clearly in console
+        res.json(attendance);
 
     } catch (error) {
-        console.error("Error fetching student attendance summary:", error);
-        res.status(500).json({ message: "Server error processing attendance" });
+        console.error("Error fetching attendance:", error);
+        res.status(500).json({ message: "Internal server error" });
     }
 };
