@@ -7,7 +7,8 @@ const updateLogSchema = new mongoose.Schema({
     from: { type: String, enum: ["present", "absent"], required: true },
     to: { type: String, enum: ["present", "absent"], required: true },
     reason: { type: String },
-    changedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // staff/hod id
+    // ✅ FIXED: Changed "User" to "Auth" to match your Auth model
+    changedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Auth" },
     changedAt: { type: Date, default: Date.now },
 });
 
@@ -28,7 +29,9 @@ const attendanceSchema = new mongoose.Schema({
     period: { type: Number, required: true },
     courseId: { type: mongoose.Schema.Types.ObjectId, ref: "Course", required: true },
     subjectId: { type: mongoose.Schema.Types.ObjectId, ref: "Subject", required: true },
-    staffId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+
+    // ✅ FIXED: Changed "User" to "Auth" to match your Auth model
+    staffId: { type: mongoose.Schema.Types.ObjectId, ref: "Staff", required: true },
 
     // per-student records
     records: [recordSchema],
